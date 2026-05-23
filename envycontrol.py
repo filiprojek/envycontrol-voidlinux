@@ -233,18 +233,25 @@ def graphics_mode_switcher(graphics_mode, user_display_manager, enable_force_com
     print(f"Switching to {graphics_mode} mode")
 
     if graphics_mode == 'integrated':
-
-        if logging.getLogger().level == logging.DEBUG:
-            service = subprocess.run(
-                ["systemctl", "disable", "nvidia-persistenced.service"])
-        else:
-            service = subprocess.run(
-                ["systemctl", "disable", "nvidia-persistenced.service"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if service.returncode == 0:
-            print('Successfully disabled nvidia-persistenced.service')
-        else:
-            logging.error("An error ocurred while disabling service")
+        if shutil.which("systemctl"):
+            if logging.getLogger().level == logging.DEBUG:
+                service = subprocess.run(
+                    ["systemctl", "disable", "nvidia-persistenced.service"])
+            else:
+                service = subprocess.run(
+                    ["systemctl", "disable", "nvidia-persistenced.service"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if service.returncode == 0:
+                print('Successfully disabled nvidia-persistenced.service')
+            else:
+                logging.error("An error ocurred while disabling service")
+        elif shutil.which("sv"):
+            if os.path.exists("/var/service/nvidia-persistenced"):
+                try:
+                    os.remove("/var/service/nvidia-persistenced")
+                    print('Successfully disabled nvidia-persistenced.service')
+                except OSError as e:
+                    logging.error(f"Failed to disable service: {e}")
 
         cleanup()
 
@@ -260,17 +267,25 @@ def graphics_mode_switcher(graphics_mode, user_display_manager, enable_force_com
             f"Enable PCI-Express Runtime D3 (RTD3) Power Management: {rtd3_value or False}")
         cleanup()
 
-        if logging.getLogger().level == logging.DEBUG:
-            service = subprocess.run(
-                ["systemctl", "enable", "nvidia-persistenced.service"])
-        else:
-            service = subprocess.run(
-                ["systemctl", "enable", "nvidia-persistenced.service"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if service.returncode == 0:
-            print('Successfully enabled nvidia-persistenced.service')
-        else:
-            logging.error("An error ocurred while enabling service")
+        if shutil.which("systemctl"):
+            if logging.getLogger().level == logging.DEBUG:
+                service = subprocess.run(
+                    ["systemctl", "enable", "nvidia-persistenced.service"])
+            else:
+                service = subprocess.run(
+                    ["systemctl", "enable", "nvidia-persistenced.service"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if service.returncode == 0:
+                print('Successfully enabled nvidia-persistenced.service')
+            else:
+                logging.error("An error ocurred while enabling service")
+        elif shutil.which("sv"):
+            if os.path.exists("/etc/sv/nvidia-persistenced") and not os.path.exists("/var/service/nvidia-persistenced"):
+                try:
+                    os.symlink("/etc/sv/nvidia-persistenced", "/var/service/nvidia-persistenced")
+                    print('Successfully enabled nvidia-persistenced.service')
+                except OSError as e:
+                    logging.error(f"Failed to enable service: {e}")
 
         if rtd3_value == None:
             if use_nvidia_current:
@@ -291,17 +306,25 @@ def graphics_mode_switcher(graphics_mode, user_display_manager, enable_force_com
         print(f"Enable ForceCompositionPipeline: {enable_force_comp}")
         print(f"Enable Coolbits: {coolbits_value or False}")
 
-        if logging.getLogger().level == logging.DEBUG:
-            service = subprocess.run(
-                ["systemctl", "enable", "nvidia-persistenced.service"])
-        else:
-            service = subprocess.run(
-                ["systemctl", "enable", "nvidia-persistenced.service"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if service.returncode == 0:
-            print('Successfully enabled nvidia-persistenced.service')
-        else:
-            logging.error("An error ocurred while enabling service")
+        if shutil.which("systemctl"):
+            if logging.getLogger().level == logging.DEBUG:
+                service = subprocess.run(
+                    ["systemctl", "enable", "nvidia-persistenced.service"])
+            else:
+                service = subprocess.run(
+                    ["systemctl", "enable", "nvidia-persistenced.service"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if service.returncode == 0:
+                print('Successfully enabled nvidia-persistenced.service')
+            else:
+                logging.error("An error ocurred while enabling service")
+        elif shutil.which("sv"):
+            if os.path.exists("/etc/sv/nvidia-persistenced") and not os.path.exists("/var/service/nvidia-persistenced"):
+                try:
+                    os.symlink("/etc/sv/nvidia-persistenced", "/var/service/nvidia-persistenced")
+                    print('Successfully enabled nvidia-persistenced.service')
+                except OSError as e:
+                    logging.error(f"Failed to enable service: {e}")
 
         cleanup()
         # get the Nvidia dGPU PCI bus
@@ -433,16 +456,24 @@ def get_igpu_vendor():
 
 def get_display_manager():
     try:
-        with open('/etc/systemd/system/display-manager.service', 'r', encoding='utf-8') as f:
-            content = f.read()
-            match = re.search(r'ExecStart=(.+)\n', content)
-            if match:
-                # only return the final component of the path
-                display_manager = os.path.basename(match.group(1))
-                logging.info(f"Found {display_manager} Display Manager")
-                return display_manager
+        if shutil.which("systemctl"):
+            with open('/etc/systemd/system/display-manager.service', 'r', encoding='utf-8') as f:
+                content = f.read()
+                match = re.search(r'ExecStart=(.+)\n', content)
+                if match:
+                    # only return the final component of the path
+                    display_manager = os.path.basename(match.group(1))
+                    logging.info(f"Found {display_manager} Display Manager")
+                    return display_manager
+        elif shutil.which("sv"):
+            for dm in SUPPORTED_DISPLAY_MANAGERS:
+                if os.path.exists(f'/var/service/{dm}'):
+                    logging.info(f"Found {dm} Display Manager (runit)")
+                    return dm
     except FileNotFoundError:
-        logging.warning("Display Manager detection is not available")
+        pass
+    logging.warning("Display Manager detection is not available")
+    return None
 
 
 def generate_xrandr_script(igpu_vendor):
@@ -499,6 +530,12 @@ def rebuild_initramfs():
     # ALT Linux
     elif os.path.exists('/etc/altlinux-release'):
         command = ['make-initrd']
+    # Void Linux
+    elif shutil.which('xbps-install'):
+        if shutil.which('dracut'):
+            command = ['dracut', '--force', '--regenerate-all']
+        else:
+            command = ['xbps-reconfigure', '-a']
     # Arch Linux
     elif os.path.exists('/etc/arch-release'):
         command = ['mkinitcpio', '-P']
